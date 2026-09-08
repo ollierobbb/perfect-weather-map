@@ -16,4 +16,4 @@ https://perfect-weather-map.ollierobb29.chatgpt.site
 
 ## Data
 
-The atlas uses daily Open-Meteo / ERA5 climate data. The displayed capital labels are limited to sovereign-country capitals.
+The atlas uses daily Open-Meteo / ERA5 climate data when the downloaded binary atlas is available. If that large archive is unavailable, the app clearly switches to a smooth climatological preview model. The displayed capital labels are limited to sovereign-country capitals.
