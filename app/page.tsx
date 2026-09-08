@@ -66,6 +66,26 @@ function wrapLongitude(value: number) {
   return ((value + 180) % 360 + 360) % 360 - 180;
 }
 
+function chooseCityLabels(cities: City[], project: (city: City) => { x: number; y: number; visible?: boolean }, zoomScale: number, screenScale: number, wrapWidth?: number) {
+  const maximumLabels = zoomScale < 1.25 ? 28 : zoomScale < 1.8 ? 64 : zoomScale < 2.8 ? 140 : Number.POSITIVE_INFINITY;
+  const orderedCities = [...cities].sort((a, b) => b.population - a.population || a.name.localeCompare(b.name));
+  const labels: Array<{ city: City; x: number; y: number; labelWidth: number }> = [];
+  for (const city of orderedCities) {
+    if (labels.length >= maximumLabels) break;
+    const point = project(city);
+    if (point.visible === false) continue;
+    const labelWidth = city.name.length * 6.1 + 8;
+    const overlaps = labels.some((label) => {
+      const rawDistance = Math.abs(point.x - label.x);
+      const horizontalDistance = wrapWidth ? Math.min(rawDistance, wrapWidth - rawDistance) * screenScale : rawDistance * screenScale;
+      const verticalDistance = Math.abs(point.y - label.y) * screenScale;
+      return horizontalDistance < (labelWidth + label.labelWidth) / 2 + 8 && verticalDistance < 15;
+    });
+    if (!overlaps) labels.push({ city, x: point.x, y: point.y, labelWidth });
+  }
+  return labels;
+}
+
 function traceRing(context: CanvasRenderingContext2D, ring: number[][], width: number, height: number) {
   let previousLongitude: number | null = null;
   ring.forEach(([longitude, latitude], pointIndex) => {
@@ -311,8 +331,11 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
           const y = ((90 - city.lat) / 180) * height;
           context.fillStyle = '#112d3c';
           context.beginPath(); context.arc(x, y, 2.3 / view.scale, 0, Math.PI * 2); context.fill();
-          context.fillStyle = 'rgba(17, 45, 60, .84)';
-          context.fillText(city.name, x + 5 / view.scale, y);
+        }
+        const labels = chooseCityLabels(cities, (city) => ({ x: ((city.lon + 180) / 360) * width, y: ((90 - city.lat) / 180) * height }), view.scale, view.scale, width);
+        context.fillStyle = 'rgba(17, 45, 60, .84)';
+        for (const label of labels) {
+          context.fillText(label.city.name, label.x + 5 / view.scale, label.y);
         }
       }
       if (hover) {
@@ -379,8 +402,11 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
         if (!point.visible) continue;
         context.fillStyle = '#112d3c';
         context.beginPath(); context.arc(point.x, point.y, 2.3, 0, Math.PI * 2); context.fill();
-        context.fillStyle = 'rgba(17, 45, 60, .84)';
-        context.fillText(city.name, point.x + 5, point.y);
+      }
+      const labels = chooseCityLabels(cities, (city) => projectGlobe(city.lon, city.lat), view.scale, 1);
+      context.fillStyle = 'rgba(17, 45, 60, .84)';
+      for (const label of labels) {
+        context.fillText(label.city.name, label.x + 5, label.y);
       }
     }
     if (hover) {
