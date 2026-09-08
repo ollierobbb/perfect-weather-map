@@ -145,6 +145,30 @@ function colourForCount(count: number, max: number) {
   return PALETTE[Math.min(PALETTE.length - 1, Math.floor(clamp(count / max, 0, 1) * PALETTE.length))];
 }
 
+function refineCounts(counts: Uint16Array, width: number, height: number, factor: number) {
+  const refinedWidth = width * factor;
+  const refinedHeight = height * factor;
+  const values = new Float32Array(refinedWidth * refinedHeight);
+  const wrapColumn = (column: number) => (column + width) % width;
+  const clampRow = (row: number) => clamp(row, 0, height - 1);
+  for (let row = 0; row < refinedHeight; row += 1) {
+    const sourceRow = (row + 0.5) / factor - 0.5;
+    const row0 = clampRow(Math.floor(sourceRow));
+    const row1 = clampRow(row0 + 1);
+    const rowBlend = sourceRow - Math.floor(sourceRow);
+    for (let column = 0; column < refinedWidth; column += 1) {
+      const sourceColumn = (column + 0.5) / factor - 0.5;
+      const column0 = wrapColumn(Math.floor(sourceColumn));
+      const column1 = wrapColumn(column0 + 1);
+      const columnBlend = sourceColumn - Math.floor(sourceColumn);
+      const top = counts[row0 * width + column0] * (1 - columnBlend) + counts[row0 * width + column1] * columnBlend;
+      const bottom = counts[row1 * width + column0] * (1 - columnBlend) + counts[row1 * width + column1] * columnBlend;
+      values[row * refinedWidth + column] = top * (1 - rowBlend) + bottom * rowBlend;
+    }
+  }
+  return { width: refinedWidth, height: refinedHeight, values };
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat('en-AU', { maximumFractionDigits: 1 }).format(value);
 }
@@ -166,6 +190,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, showBorders, sho
   const mapSizeRef = useRef({ width: 0, height: 0 });
   const countriesRef = useRef<CountryFeature[]>([]);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
+  const refinedGrid = useMemo(() => refineCounts(counts, atlas.width, atlas.height, 5), [atlas.height, atlas.width, counts]);
 
   useEffect(() => {
     fetch('/countries-110m.json').then((response) => response.json()).then((topology: CountryTopology) => { countriesRef.current = (feature(topology, topology.objects.countries) as GeoJSON.FeatureCollection<GeoJSON.GeometryObject>).features ?? []; }).catch(() => { countriesRef.current = []; });
@@ -186,13 +211,15 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, showBorders, sho
     context.save();
     context.translate(view.x, view.y);
     context.scale(view.scale, view.scale);
-    const cellWidth = width / atlas.width;
-    const cellHeight = height / atlas.height;
+    const cellWidth = width / refinedGrid.width;
+    const cellHeight = height / refinedGrid.height;
+    const sourceCellWidth = width / atlas.width;
+    const sourceCellHeight = height / atlas.height;
     const maxCount = Math.max(...counts);
-    for (let row = 0; row < atlas.height; row += 1) {
-      for (let col = 0; col < atlas.width; col += 1) {
-        const index = row * atlas.width + col;
-        context.fillStyle = colourForCount(counts[index], maxCount);
+    for (let row = 0; row < refinedGrid.height; row += 1) {
+      for (let col = 0; col < refinedGrid.width; col += 1) {
+        const index = row * refinedGrid.width + col;
+        context.fillStyle = colourForCount(refinedGrid.values[index], maxCount);
         context.globalAlpha = 0.9;
         context.fillRect(col * cellWidth, height - (row + 1) * cellHeight, cellWidth + 0.6, cellHeight + 0.6);
       }
@@ -225,7 +252,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, showBorders, sho
       context.strokeStyle = '#102a39';
       context.lineWidth = 2 / view.scale;
       context.setLineDash([]);
-      context.strokeRect(col * cellWidth + 1 / view.scale, height - (row + 1) * cellHeight + 1 / view.scale, cellWidth - 2 / view.scale, cellHeight - 2 / view.scale);
+      context.strokeRect(col * sourceCellWidth + 1 / view.scale, height - (row + 1) * sourceCellHeight + 1 / view.scale, sourceCellWidth - 2 / view.scale, sourceCellHeight - 2 / view.scale);
     }
     if (showCities) {
       context.setLineDash([]);
@@ -246,7 +273,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, showBorders, sho
       context.strokeStyle = '#fff';
       context.lineWidth = 1.4 / view.scale;
       context.setLineDash([]);
-      context.strokeRect(col * cellWidth + 1 / view.scale, height - (row + 1) * cellHeight + 1 / view.scale, cellWidth - 2 / view.scale, cellHeight - 2 / view.scale);
+      context.strokeRect(col * sourceCellWidth + 1 / view.scale, height - (row + 1) * sourceCellHeight + 1 / view.scale, sourceCellWidth - 2 / view.scale, sourceCellHeight - 2 / view.scale);
     }
     context.restore();
   }
@@ -341,7 +368,7 @@ export default function Home() {
           <div className="criteria-section layers-section"><div className="section-label"><span>Map layers</span><span className="section-number">03</span></div><label className="toggle-row"><span><i className="layer-dot layer-dot--cities" /> Key cities</span><input type="checkbox" checked={showCities} onChange={(event) => setShowCities(event.target.checked)} /><b /></label><label className="toggle-row"><span><i className="layer-dot layer-dot--borders" /> Country outlines</span><input type="checkbox" checked={showBorders} onChange={(event) => setShowBorders(event.target.checked)} /><b /></label></div>
           <div className="data-note"><span className="data-note__icon">↗</span><p><strong>How this is calculated</strong><br />Daily ERA5 reanalysis from Open-Meteo, sampled on a 5° global grid. Dew point is derived from temperature and relative humidity.</p></div>
         </aside>
-        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">Days per year · {atlas.year}</span><h2>Annual number of perfect weather days</h2><p>{criteriaText}</p></div><div className="map-heading__actions"><span className="view-label">Drag to explore · scroll to zoom</span><button className="icon-button" aria-label="Reset map view" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>⌂</button></div></div><div className="map-frame"><MapCanvas atlas={atlas} counts={counts} selectedIndex={selectedIndex} hover={hover} view={view} showBorders={showBorders} showCities={showCities} onViewChange={setView} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Source: Open-Meteo / ERA5 · 5° grid · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><span>{atlas.lats[hovered.row].toFixed(1)}°, {atlas.lons[hovered.col].toFixed(1)}°</span><strong>{hoveredCount} days</strong></div>}</div><div className="map-footer"><div className="legend"><span>0</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{selectedDayCount}</span><em>perfect days</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
+        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">Days per year · {atlas.year}</span><h2>Annual number of perfect weather days</h2><p>{criteriaText}</p></div><div className="map-heading__actions"><span className="view-label">Drag to explore · scroll to zoom</span><button className="icon-button" aria-label="Reset map view" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>⌂</button></div></div><div className="map-frame"><MapCanvas atlas={atlas} counts={counts} selectedIndex={selectedIndex} hover={hover} view={view} showBorders={showBorders} showCities={showCities} onViewChange={setView} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Source: Open-Meteo / ERA5 · 5° source · 1° display tiles · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><span>{atlas.lats[hovered.row].toFixed(1)}°, {atlas.lons[hovered.col].toFixed(1)}°</span><strong>{hoveredCount} days</strong></div>}</div><div className="map-footer"><div className="legend"><span>0</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{selectedDayCount}</span><em>perfect days</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
         <aside className="insight-panel"><div className="insight-card insight-card--selected"><span className="eyebrow">Selected place</span><h3>{selectedLabel}</h3>{selectedCount !== null ? <><div className="big-number">{selectedCount}<small> / {selectedDayCount}</small></div><p>days match your definition of perfect.</p><div className="insight-meter"><span style={{ width: `${(selectedCount / Math.max(1, selectedDayCount)) * 100}%` }} /></div></> : <p className="empty-copy">Click anywhere on the map to inspect a grid cell or a nearby city.</p>}</div><div className="insight-card"><div className="card-heading"><span className="eyebrow">Most promising cells</span><span className="spark">↗</span></div>{bestCells.map((index) => { const row = Math.floor(index / atlas.width); const col = index % atlas.width; return <button className="rank-row" key={index} onClick={() => setSelectedIndex(index)}><span className="rank">0{bestCells.indexOf(index) + 1}</span><span><strong>{atlas.lats[row].toFixed(1)}°, {atlas.lons[col].toFixed(1)}°</strong><small>{counts[index]} perfect days</small></span><b>→</b></button>; })}</div><div className="insight-card insight-card--source"><span className="eyebrow">Dataset</span><div className="source-row"><span className="source-logo">ERA5</span><span><strong>Global daily reanalysis</strong><small>{dataStatus === 'live' ? 'Connected to the local downloaded atlas' : dataStatus === 'preview' ? 'Preview mode · importer included in the project' : 'Loading the downloaded atlas'}</small></span></div><a href="https://open-meteo.com/en/docs/historical-weather-api" target="_blank" rel="noreferrer">Read the data notes ↗</a></div></aside>
       </div>
     </main>
