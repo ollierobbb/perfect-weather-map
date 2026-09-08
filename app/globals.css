@@ -100,6 +100,14 @@ button { cursor: pointer; }
 .map-tooltip { min-width: 112px; display: flex; flex-direction: column; gap: 3px; position: absolute; z-index: 3; padding: 8px 10px; border: 1px solid rgba(161, 197, 190, .7); border-radius: 6px; background: rgba(249, 255, 252, .93); box-shadow: 0 5px 16px rgba(18, 54, 59, .12); pointer-events: none; transform: translateZ(0); }
 .map-tooltip span { color: var(--muted); font-size: 9px; }
 .map-tooltip strong { color: var(--ink); font-size: 13px; }
+.map-tooltip--wide { width: 215px; gap: 8px; }
+.map-tooltip__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.map-tooltip__top strong { font-size: 11px; white-space: nowrap; }
+.map-tooltip__metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; padding: 8px 0; border-top: 1px solid #dbe9e5; border-bottom: 1px solid #dbe9e5; }
+.map-tooltip__metrics span { display: flex; flex-direction: column; gap: 2px; }
+.map-tooltip__metrics small { color: var(--muted); font-size: 9px; }
+.map-tooltip__metrics b { color: var(--ink); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.map-tooltip em { color: #8ca1a3; font-size: 8px; font-style: normal; }
 .map-footer { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 16px 2px 0; }
 .legend { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
 .legend-ramp { display: flex; width: 215px; height: 11px; overflow: hidden; border: 1px solid rgba(68, 93, 92, .38); }
