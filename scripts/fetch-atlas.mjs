@@ -25,7 +25,7 @@ async function fetchBatch(batch, batchIndex) {
     longitude: batch.map((point) => point.lon).join(','),
     start_date: `${YEAR}-01-01`,
     end_date: `${YEAR}-12-31`,
-    daily: 'temperature_2m_max,wind_speed_10m_max,relative_humidity_2m_mean,cloud_cover_mean',
+    daily: 'temperature_2m_max,dew_point_2m_mean,wind_speed_10m_max,relative_humidity_2m_mean,cloud_cover_mean',
     timezone: 'UTC',
     wind_speed_unit: 'ms',
     cell_selection: 'nearest',
@@ -39,6 +39,8 @@ async function fetchBatch(batch, batchIndex) {
       const payload = await response.json();
       return Array.isArray(payload) ? payload : [payload];
     }
+    const errorBody = await response.text();
+    if (/daily api request limit exceeded/i.test(errorBody)) throw new Error('Open-Meteo daily API quota is exhausted; retry the atlas import after the quota resets');
     if (response.status !== 429 && response.status < 500) throw new Error(`Open-Meteo batch ${batchIndex + 1} failed: ${response.status}`);
     const retryAfter = Number(response.headers.get('retry-after'));
     const waitMs = Number.isFinite(retryAfter) ? Math.max(MIN_REQUEST_INTERVAL_MS, retryAfter * 1000) : MIN_REQUEST_INTERVAL_MS;
@@ -51,6 +53,7 @@ async function fetchBatch(batch, batchIndex) {
 async function main() {
   const count = points.length * days;
   const tmax = new Int16Array(count);
+  const dew = new Int16Array(count);
   const wind = new Uint8Array(count);
   const humidity = new Uint8Array(count);
   const cloud = new Uint8Array(count);
@@ -67,10 +70,12 @@ async function main() {
         const daily = payload.daily ?? {};
         for (let day = 0; day < days; day += 1) {
           const temp = Number(daily.temperature_2m_max?.[day]);
+          const dewPoint = Number(daily.dew_point_2m_mean?.[day]);
           const speed = Number(daily.wind_speed_10m_max?.[day]);
           const rh = Number(daily.relative_humidity_2m_mean?.[day]);
           const cover = Number(daily.cloud_cover_mean?.[day]);
           tmax[offset + day] = Number.isFinite(temp) ? Math.round(temp * 10) : -32768;
+          dew[offset + day] = Number.isFinite(dewPoint) ? Math.round(dewPoint * 10) : -32768;
           wind[offset + day] = Number.isFinite(speed) ? Math.max(0, Math.min(255, Math.round(speed * 10))) : 255;
           humidity[offset + day] = Number.isFinite(rh) ? Math.max(0, Math.min(100, Math.round(rh))) : 255;
           cloud[offset + day] = Number.isFinite(cover) ? Math.max(0, Math.min(100, Math.round(cover))) : 255;
@@ -83,7 +88,7 @@ async function main() {
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   const headerBytes = 16;
-  const bytes = Buffer.alloc(headerBytes + tmax.byteLength + wind.byteLength + humidity.byteLength + cloud.byteLength);
+  const bytes = Buffer.alloc(headerBytes + tmax.byteLength + dew.byteLength + wind.byteLength + humidity.byteLength + cloud.byteLength);
   const header = new Uint32Array(bytes.buffer, bytes.byteOffset, 4);
   header[0] = lons.length;
   header[1] = lats.length;
@@ -91,6 +96,7 @@ async function main() {
   header[3] = YEAR;
   let offset = headerBytes;
   Buffer.from(tmax.buffer).copy(bytes, offset); offset += tmax.byteLength;
+  Buffer.from(dew.buffer).copy(bytes, offset); offset += dew.byteLength;
   Buffer.from(wind.buffer).copy(bytes, offset); offset += wind.byteLength;
   Buffer.from(humidity.buffer).copy(bytes, offset); offset += humidity.byteLength;
   Buffer.from(cloud.buffer).copy(bytes, offset);
@@ -106,6 +112,7 @@ async function main() {
     longitudeCenters: lons,
     variables: {
       tmax: 'Daily maximum 2 m temperature, encoded in tenths of °C',
+      dew: 'Daily mean 2 m dew point, encoded in tenths of °C',
       wind: 'Daily maximum 10 m wind speed, encoded in tenths of m/s',
       humidity: 'Daily mean 2 m relative humidity, %',
       cloud: 'Daily mean total cloud cover, %',
