@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Topology } from 'topojson-specification';
 
@@ -250,6 +250,8 @@ function MapCanvas({ atlas, cities, counts, metric, averageTemperatures, tempera
   const countriesRef = useRef<CountryFeature[]>([]);
   const [landMask, setLandMask] = useState<Uint8Array | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; baseGlobeLon: number; moved: boolean } | null>(null);
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ distance: number; scale: number; midpointX: number; midpointY: number; viewX: number; viewY: number } | null>(null);
   const refinedGrid = useMemo(() => refineCounts(counts, atlas.width, atlas.height, DISPLAY_FACTOR), [atlas.height, atlas.width, counts]);
   const refinedTemperatures = useMemo(() => refineValues(averageTemperatures, atlas.width, atlas.height, DISPLAY_FACTOR), [atlas.height, atlas.width, averageTemperatures]);
   const validData = useMemo(() => {
@@ -483,7 +485,77 @@ function MapCanvas({ atlas, cities, counts, metric, averageTemperatures, tempera
     return { index: row * atlas.width + col, displayCol, displayRow, lat, lon, localX: clientX - rect.left, localY: clientY - rect.top };
   }
 
-  return <canvas ref={canvasRef} className="map-canvas" aria-label={metric === 'temperature' ? 'Interactive global average high temperature heat map' : 'Interactive global perfect weather heat map'} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragRef.current = { startX: event.clientX, startY: event.clientY, baseX: view.x, baseY: view.y, baseGlobeLon: globeLon, moved: false }; }} onPointerMove={(event) => { const drag = dragRef.current; if (drag) { const dx = event.clientX - drag.startX; const dy = event.clientY - drag.startY; drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 4; if (viewMode === 'globe') onGlobeRotate(wrapLongitude(drag.baseGlobeLon - dx * 0.45)); else onViewChange({ ...view, x: drag.baseX + dx, y: drag.baseY + dy }); return; } const point = cellFromPoint(event.clientX, event.clientY); onHover(point ? { index: point.index, displayCol: point.displayCol, displayRow: point.displayRow, lat: point.lat, lon: point.lon, x: point.localX, y: point.localY } : null); }} onPointerUp={(event) => { const drag = dragRef.current; dragRef.current = null; const point = cellFromPoint(event.clientX, event.clientY); if (drag && !drag.moved && point) onSelect(point.index); }} onPointerLeave={() => { if (!dragRef.current) onHover(null); }} onWheel={(event) => { event.preventDefault(); const factor = event.deltaY < 0 ? 1.12 : 0.89; const nextScale = clamp(view.scale * factor, 0.82, 4.8); const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return; const px = event.clientX - rect.left; const py = event.clientY - rect.top; if (viewMode === 'globe') onViewChange({ ...view, scale: nextScale }); else { const wrappedX = wrap(view.x, width * view.scale); onViewChange({ scale: nextScale, x: px - ((px - wrappedX) / view.scale) * nextScale, y: py - ((py - view.y) / view.scale) * nextScale }); } }} />;
+  function localPointerPosition(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    return rect ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : { x: event.clientX, y: event.clientY };
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointersRef.current.set(event.pointerId, localPointerPosition(event));
+    if (pointersRef.current.size >= 2) {
+      const [first, second] = Array.from(pointersRef.current.values()).slice(0, 2);
+      const distance = Math.hypot(second.x - first.x, second.y - first.y);
+      pinchRef.current = { distance: Math.max(1, distance), scale: view.scale, midpointX: (first.x + second.x) / 2, midpointY: (first.y + second.y) / 2, viewX: view.x, viewY: view.y };
+      dragRef.current = null;
+      onHover(null);
+      return;
+    }
+    dragRef.current = { startX: event.clientX, startY: event.clientY, baseX: view.x, baseY: view.y, baseGlobeLon: globeLon, moved: false };
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+    pointersRef.current.set(event.pointerId, localPointerPosition(event));
+    if (pointersRef.current.size >= 2) {
+      const [first, second] = Array.from(pointersRef.current.values()).slice(0, 2);
+      const midpointX = (first.x + second.x) / 2;
+      const midpointY = (first.y + second.y) / 2;
+      const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+      const pinch = pinchRef.current ?? { distance, scale: view.scale, midpointX, midpointY, viewX: view.x, viewY: view.y };
+      pinchRef.current = pinch;
+      const nextScale = clamp(pinch.scale * (distance / pinch.distance), 0.82, 4.8);
+      if (viewMode === 'globe') {
+        onViewChange({ ...view, scale: nextScale });
+      } else {
+        const wrappedStartX = wrap(pinch.viewX, width * pinch.scale);
+        const contentX = (pinch.midpointX - wrappedStartX) / pinch.scale;
+        const contentY = (pinch.midpointY - pinch.viewY) / pinch.scale;
+        onViewChange({ scale: nextScale, x: midpointX - contentX * nextScale, y: midpointY - contentY * nextScale });
+      }
+      return;
+    }
+    const drag = dragRef.current;
+    if (drag) {
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 4;
+      if (viewMode === 'globe') onGlobeRotate(wrapLongitude(drag.baseGlobeLon - dx * 0.45));
+      else onViewChange({ ...view, x: drag.baseX + dx, y: drag.baseY + dy });
+      return;
+    }
+    const point = cellFromPoint(event.clientX, event.clientY);
+    onHover(point ? { index: point.index, displayCol: point.displayCol, displayRow: point.displayRow, lat: point.lat, lon: point.lon, x: point.localX, y: point.localY } : null);
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>) {
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (drag && !drag.moved && pointersRef.current.size === 0) {
+      const point = cellFromPoint(event.clientX, event.clientY);
+      if (point) onSelect(point.index);
+    }
+  }
+
+  function handlePointerCancel(event: ReactPointerEvent<HTMLCanvasElement>) {
+    pointersRef.current.delete(event.pointerId);
+    dragRef.current = null;
+    pinchRef.current = null;
+    onHover(null);
+  }
+
+  return <canvas ref={canvasRef} className="map-canvas" aria-label={metric === 'temperature' ? 'Interactive global average high temperature heat map' : 'Interactive global perfect weather heat map'} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerCancel} onPointerLeave={() => { if (!dragRef.current && pointersRef.current.size === 0) onHover(null); }} onWheel={(event) => { event.preventDefault(); const factor = event.deltaY < 0 ? 1.12 : 0.89; const nextScale = clamp(view.scale * factor, 0.82, 4.8); const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return; const px = event.clientX - rect.left; const py = event.clientY - rect.top; if (viewMode === 'globe') onViewChange({ ...view, scale: nextScale }); else { const wrappedX = wrap(view.x, width * view.scale); onViewChange({ scale: nextScale, x: px - ((px - wrappedX) / view.scale) * nextScale, y: py - ((py - view.y) / view.scale) * nextScale }); } }} />;
 }
 
 export default function Home() {
