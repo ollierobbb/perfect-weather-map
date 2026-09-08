@@ -34,6 +34,7 @@ type HoverState = { index: number; displayCol: number; displayRow: number; lat: 
 type ViewState = { scale: number; x: number; y: number };
 type HoverSummary = { temp: number; dew: number; wind: number; cloud: number; tempDays: number; dewDays: number; windDays: number; cloudDays: number };
 type ViewMode = 'map' | 'globe';
+type HeatMetric = 'perfect' | 'temperature';
 type CountryFeature = GeoJSON.Feature<GeoJSON.GeometryObject>;
 type CountryTopology = Topology<{ countries: GeometryCollection }>;
 
@@ -193,7 +194,13 @@ function colourForCount(count: number, max: number) {
   return PALETTE[Math.min(PALETTE.length - 1, Math.floor(clamp(count / max, 0, 1) * PALETTE.length))];
 }
 
-function refineCounts(counts: Uint16Array, width: number, height: number, factor: number) {
+function colourForTemperature(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return PALETTE[0];
+  if (max <= min) return PALETTE[Math.floor(PALETTE.length / 2)];
+  return PALETTE[Math.min(PALETTE.length - 1, Math.floor(clamp((value - min) / (max - min), 0, 1) * PALETTE.length))];
+}
+
+function refineValues(sourceValues: ArrayLike<number>, width: number, height: number, factor: number) {
   const refinedWidth = width * factor;
   const refinedHeight = height * factor;
   const values = new Float32Array(refinedWidth * refinedHeight);
@@ -209,12 +216,16 @@ function refineCounts(counts: Uint16Array, width: number, height: number, factor
       const column0 = wrapColumn(Math.floor(sourceColumn));
       const column1 = wrapColumn(column0 + 1);
       const columnBlend = sourceColumn - Math.floor(sourceColumn);
-      const top = counts[row0 * width + column0] * (1 - columnBlend) + counts[row0 * width + column1] * columnBlend;
-      const bottom = counts[row1 * width + column0] * (1 - columnBlend) + counts[row1 * width + column1] * columnBlend;
+      const top = sourceValues[row0 * width + column0] * (1 - columnBlend) + sourceValues[row0 * width + column1] * columnBlend;
+      const bottom = sourceValues[row1 * width + column0] * (1 - columnBlend) + sourceValues[row1 * width + column1] * columnBlend;
       values[row * refinedWidth + column] = top * (1 - rowBlend) + bottom * rowBlend;
     }
   }
   return { width: refinedWidth, height: refinedHeight, values };
+}
+
+function refineCounts(counts: Uint16Array, width: number, height: number, factor: number) {
+  return refineValues(counts, width, height, factor);
 }
 
 function formatNumber(value: number) {
@@ -233,13 +244,14 @@ function CriteriaRange({ label, min, max, lower, upper, step, unit, onLower, onU
   );
 }
 
-function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, onViewChange, onGlobeRotate, onHover, onSelect }: { atlas: AtlasData; cities: City[]; counts: Uint16Array; selectedIndex: number | null; hover: HoverState; view: ViewState; viewMode: ViewMode; globeLon: number; showBorders: boolean; showCities: boolean; onViewChange: (next: ViewState) => void; onGlobeRotate: (next: number) => void; onHover: (next: HoverState) => void; onSelect: (index: number) => void }) {
+function MapCanvas({ atlas, cities, counts, metric, averageTemperatures, temperatureAvailable, temperatureMin, temperatureMax, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, onViewChange, onGlobeRotate, onHover, onSelect }: { atlas: AtlasData; cities: City[]; counts: Uint16Array; metric: HeatMetric; averageTemperatures: Float32Array; temperatureAvailable: Uint8Array; temperatureMin: number; temperatureMax: number; selectedIndex: number | null; hover: HoverState; view: ViewState; viewMode: ViewMode; globeLon: number; showBorders: boolean; showCities: boolean; onViewChange: (next: ViewState) => void; onGlobeRotate: (next: number) => void; onHover: (next: HoverState) => void; onSelect: (index: number) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mapSizeRef = useRef({ width: 0, height: 0 });
   const countriesRef = useRef<CountryFeature[]>([]);
   const [landMask, setLandMask] = useState<Uint8Array | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; baseGlobeLon: number; moved: boolean } | null>(null);
   const refinedGrid = useMemo(() => refineCounts(counts, atlas.width, atlas.height, DISPLAY_FACTOR), [atlas.height, atlas.width, counts]);
+  const refinedTemperatures = useMemo(() => refineValues(averageTemperatures, atlas.width, atlas.height, DISPLAY_FACTOR), [atlas.height, atlas.width, averageTemperatures]);
   const validData = useMemo(() => {
     const available = new Uint8Array(atlas.width * atlas.height);
     for (let cell = 0; cell < available.length; cell += 1) {
@@ -280,7 +292,8 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
     const sourceCellHeight = height / atlas.height;
     const sourceCellForDisplay = (row: number, col: number) => Math.floor(row / DISPLAY_FACTOR) * atlas.width + Math.floor(col / DISPLAY_FACTOR);
     const tileIsLand = (row: number, col: number) => landMask === null || landMask[(refinedGrid.height - row - 1) * refinedGrid.width + col] === 1;
-    const tileHasData = (row: number, col: number) => validData[sourceCellForDisplay(row, col)] === 1;
+    const tileHasData = (row: number, col: number) => (metric === 'temperature' ? temperatureAvailable[sourceCellForDisplay(row, col)] === 1 : validData[sourceCellForDisplay(row, col)] === 1);
+    const colourForMetric = (index: number) => metric === 'temperature' ? colourForTemperature(refinedTemperatures.values[index], temperatureMin, temperatureMax) : colourForCount(refinedGrid.values[index], maxCount);
 
     const drawMapCopy = () => {
       for (let row = 0; row < refinedGrid.height; row += 1) {
@@ -289,7 +302,7 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
           const index = row * refinedGrid.width + col;
           const hasData = tileHasData(row, col);
           const isLand = tileIsLand(row, col) && latitude > -60;
-          context.fillStyle = !isLand ? OCEAN_COLOUR : !hasData ? '#b9c6c2' : colourForCount(refinedGrid.values[index], maxCount);
+          context.fillStyle = !isLand ? OCEAN_COLOUR : !hasData ? '#b9c6c2' : colourForMetric(index);
           context.globalAlpha = 0.95;
           context.fillRect(col * cellWidth, height - (row + 1) * cellHeight, cellWidth + 0.6, cellHeight + 0.6);
         }
@@ -383,7 +396,7 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
         if (!point.visible) continue;
         const index = row * refinedGrid.width + col;
         const isLand = tileIsLand(row, col) && latitude > -60;
-        context.fillStyle = !isLand ? OCEAN_COLOUR : !tileHasData(row, col) ? '#b9c6c2' : colourForCount(refinedGrid.values[index], maxCount);
+        context.fillStyle = !isLand ? OCEAN_COLOUR : !tileHasData(row, col) ? '#b9c6c2' : colourForMetric(index);
         context.globalAlpha = 0.95;
         context.fillRect(point.x - globeTileSize / 2, point.y - globeTileSize / 2, globeTileSize + 0.5, globeTileSize + 0.5);
       }
@@ -430,7 +443,7 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { draw(); }, [atlas, cities, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, landMask, validData]);
+  useEffect(() => { draw(); }, [atlas, cities, counts, metric, averageTemperatures, temperatureAvailable, temperatureMin, temperatureMax, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, landMask, validData]);
 
   function cellFromPoint(clientX: number, clientY: number) {
     const canvas = canvasRef.current;
@@ -470,7 +483,7 @@ function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode
     return { index: row * atlas.width + col, displayCol, displayRow, lat, lon, localX: clientX - rect.left, localY: clientY - rect.top };
   }
 
-  return <canvas ref={canvasRef} className="map-canvas" aria-label="Interactive global perfect weather heat map" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragRef.current = { startX: event.clientX, startY: event.clientY, baseX: view.x, baseY: view.y, baseGlobeLon: globeLon, moved: false }; }} onPointerMove={(event) => { const drag = dragRef.current; if (drag) { const dx = event.clientX - drag.startX; const dy = event.clientY - drag.startY; drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 4; if (viewMode === 'globe') onGlobeRotate(wrapLongitude(drag.baseGlobeLon - dx * 0.45)); else onViewChange({ ...view, x: drag.baseX + dx, y: drag.baseY + dy }); return; } const point = cellFromPoint(event.clientX, event.clientY); onHover(point ? { index: point.index, displayCol: point.displayCol, displayRow: point.displayRow, lat: point.lat, lon: point.lon, x: point.localX, y: point.localY } : null); }} onPointerUp={(event) => { const drag = dragRef.current; dragRef.current = null; const point = cellFromPoint(event.clientX, event.clientY); if (drag && !drag.moved && point) onSelect(point.index); }} onPointerLeave={() => { if (!dragRef.current) onHover(null); }} onWheel={(event) => { event.preventDefault(); const factor = event.deltaY < 0 ? 1.12 : 0.89; const nextScale = clamp(view.scale * factor, 0.82, 4.8); const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return; const px = event.clientX - rect.left; const py = event.clientY - rect.top; if (viewMode === 'globe') onViewChange({ ...view, scale: nextScale }); else { const wrappedX = wrap(view.x, width * view.scale); onViewChange({ scale: nextScale, x: px - ((px - wrappedX) / view.scale) * nextScale, y: py - ((py - view.y) / view.scale) * nextScale }); } }} />;
+  return <canvas ref={canvasRef} className="map-canvas" aria-label={metric === 'temperature' ? 'Interactive global average high temperature heat map' : 'Interactive global perfect weather heat map'} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragRef.current = { startX: event.clientX, startY: event.clientY, baseX: view.x, baseY: view.y, baseGlobeLon: globeLon, moved: false }; }} onPointerMove={(event) => { const drag = dragRef.current; if (drag) { const dx = event.clientX - drag.startX; const dy = event.clientY - drag.startY; drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 4; if (viewMode === 'globe') onGlobeRotate(wrapLongitude(drag.baseGlobeLon - dx * 0.45)); else onViewChange({ ...view, x: drag.baseX + dx, y: drag.baseY + dy }); return; } const point = cellFromPoint(event.clientX, event.clientY); onHover(point ? { index: point.index, displayCol: point.displayCol, displayRow: point.displayRow, lat: point.lat, lon: point.lon, x: point.localX, y: point.localY } : null); }} onPointerUp={(event) => { const drag = dragRef.current; dragRef.current = null; const point = cellFromPoint(event.clientX, event.clientY); if (drag && !drag.moved && point) onSelect(point.index); }} onPointerLeave={() => { if (!dragRef.current) onHover(null); }} onWheel={(event) => { event.preventDefault(); const factor = event.deltaY < 0 ? 1.12 : 0.89; const nextScale = clamp(view.scale * factor, 0.82, 4.8); const rect = canvasRef.current?.getBoundingClientRect(); if (!rect) return; const px = event.clientX - rect.left; const py = event.clientY - rect.top; if (viewMode === 'globe') onViewChange({ ...view, scale: nextScale }); else { const wrappedX = wrap(view.x, width * view.scale); onViewChange({ scale: nextScale, x: px - ((px - wrappedX) / view.scale) * nextScale, y: py - ((py - view.y) / view.scale) * nextScale }); } }} />;
 }
 
 export default function Home() {
@@ -478,6 +491,7 @@ export default function Home() {
   const [cities, setCities] = useState<City[]>([]);
   const [dataStatus, setDataStatus] = useState<'loading' | 'live' | 'preview'>('loading');
   const [criteria, setCriteria] = useState<Criteria>(DEFAULT_CRITERIA);
+  const [metric, setMetric] = useState<HeatMetric>('perfect');
   const [view, setView] = useState<ViewState>({ scale: 1, x: 0, y: 0 });
   const [viewMode, setViewMode] = useState<ViewMode>('map');
   const [globeLon, setGlobeLon] = useState(0);
@@ -511,13 +525,42 @@ export default function Home() {
     }
     return result;
   }, [atlas, criteria, monthMap]);
+  const temperatureSummary = useMemo(() => {
+    const average = new Float32Array(atlas.width * atlas.height);
+    const available = new Uint8Array(atlas.width * atlas.height);
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    for (let cell = 0; cell < average.length; cell += 1) {
+      const offset = cell * atlas.days;
+      let total = 0;
+      let observed = 0;
+      for (let day = 0; day < atlas.days; day += 1) {
+        if (monthMap[day] < criteria.monthStart || monthMap[day] > criteria.monthEnd) continue;
+        const rawTemperature = atlas.tmax[offset + day];
+        if (rawTemperature === -32768) continue;
+        total += rawTemperature / 10;
+        observed += 1;
+      }
+      if (!observed) continue;
+      average[cell] = total / observed;
+      available[cell] = 1;
+      minimum = Math.min(minimum, average[cell]);
+      maximum = Math.max(maximum, average[cell]);
+    }
+    return { average, available, minimum: Number.isFinite(minimum) ? Math.floor(minimum) : 0, maximum: Number.isFinite(maximum) ? Math.ceil(maximum) : 40 };
+  }, [atlas, criteria.monthEnd, criteria.monthStart, monthMap]);
 
   const selected = selectedIndex === null ? null : { index: selectedIndex, row: Math.floor(selectedIndex / atlas.width), col: selectedIndex % atlas.width };
   const hovered = hover ? { index: hover.index } : null;
   const selectedCity = selected ? cities.find((city) => Math.abs(city.lat - atlas.lats[selected.row]) < 3 && Math.abs(city.lon - atlas.lons[selected.col]) < 3) : null;
   const selectedLabel = selectedCity?.name ?? (selected ? `${atlas.lats[selected.row].toFixed(1)}°, ${atlas.lons[selected.col].toFixed(1)}°` : 'Select a place');
   const hoveredCount = hovered ? counts[hovered.index] : null;
+  const hoveredAverageTemperature = hovered && temperatureSummary.available[hovered.index] ? temperatureSummary.average[hovered.index] : null;
+  const hoveredHeadline = metric === 'temperature' && hoveredAverageTemperature !== null ? `${hoveredAverageTemperature.toFixed(1)}°C average high` : `${hoveredCount} perfect days`;
   const selectedCount = selected ? counts[selected.index] : null;
+  const selectedTemperature = selected && temperatureSummary.available[selected.index] ? temperatureSummary.average[selected.index] : null;
+  const selectedMetricValue = metric === 'temperature' ? selectedTemperature : selectedCount;
+  const selectedMeter = selectedMetricValue === null ? 0 : metric === 'temperature' ? ((selectedMetricValue - temperatureSummary.minimum) / Math.max(1, temperatureSummary.maximum - temperatureSummary.minimum)) * 100 : (selectedMetricValue / Math.max(1, selectedDayCount)) * 100;
   const hoverSummary = useMemo<HoverSummary | null>(() => {
     if (!hover) return null;
     const offset = hover.index * atlas.days;
@@ -554,12 +597,19 @@ export default function Home() {
     if (!observed) return null;
     return { temp: tempTotal / observed, dew: dewTotal / observed, wind: windTotal / observed, cloud: cloudTotal / observed, tempDays, dewDays, windDays, cloudDays };
   }, [atlas, criteria.cloudMax, criteria.dewMax, criteria.dewMin, criteria.monthEnd, criteria.monthStart, criteria.tempMax, criteria.tempMin, criteria.windMax, hover, monthMap]);
-  const bestCells = useMemo(() => Array.from(counts.keys()).sort((a, b) => counts[b] - counts[a]).slice(0, 3), [counts]);
+  const bestCells = useMemo(() => {
+    const candidates = Array.from(counts.keys());
+    if (metric === 'temperature') return candidates.filter((index) => temperatureSummary.available[index] === 1).sort((a, b) => temperatureSummary.average[b] - temperatureSummary.average[a]).slice(0, 3);
+    return candidates.sort((a, b) => counts[b] - counts[a]).slice(0, 3);
+  }, [counts, metric, temperatureSummary]);
   const monthLeft = ((criteria.monthStart - 1) / 11) * 100;
   const monthRight = ((criteria.monthEnd - 1) / 11) * 100;
+  const legendMinimum = metric === 'temperature' ? `${temperatureSummary.minimum}°` : '0';
+  const legendMaximum = metric === 'temperature' ? `${temperatureSummary.maximum}°` : `${selectedDayCount}`;
+  const legendLabel = metric === 'temperature' ? 'average high' : 'perfect days';
 
   function updateCriteria(key: keyof Criteria, value: number) { setCriteria((current) => ({ ...current, [key]: value })); }
-  function reset() { setCriteria(DEFAULT_CRITERIA); setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); setSelectedIndex(null); setHover(null); }
+  function reset() { setCriteria(DEFAULT_CRITERIA); setMetric('perfect'); setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); setSelectedIndex(null); setHover(null); }
   const criteriaText = `Highs ${criteria.tempMin}–${criteria.tempMax} °C · Dew point ${criteria.dewMin}–${criteria.dewMax} °C · Light winds ≤ ${criteria.windMax} m/s · Cloud cover ≤ ${criteria.cloudMax}%`;
 
   return (
@@ -574,8 +624,8 @@ export default function Home() {
           <div className="criteria-section layers-section"><div className="section-label"><span>Map layers</span><span className="section-number">03</span></div><label className="toggle-row"><span><i className="layer-dot layer-dot--cities" /> Country capitals <small className="layer-count">{cities.length}</small></span><input type="checkbox" aria-label={`Country capitals ${cities.length}`} checked={showCities} onChange={(event) => setShowCities(event.target.checked)} /><b /></label><label className="toggle-row"><span><i className="layer-dot layer-dot--borders" /> Country outlines</span><input type="checkbox" checked={showBorders} onChange={(event) => setShowBorders(event.target.checked)} /><b /></label></div>
           <div className="data-note"><span className="data-note__icon">↗</span><p><strong>How this is calculated</strong><br />Daily ERA5 reanalysis from Open-Meteo, sampled on a 5° global grid. Dew point is derived from temperature and relative humidity.</p></div>
         </aside>
-        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">Days per year · {atlas.year}</span><h2>Annual number of perfect weather days</h2><p>{criteriaText}</p></div><div className="map-heading__actions"><div className="view-mode-toggle" role="group" aria-label="Map view"><button className={viewMode === 'map' ? 'is-active' : ''} onClick={() => { setViewMode('map'); setHover(null); }}>Map</button><button className={viewMode === 'globe' ? 'is-active' : ''} onClick={() => { setViewMode('globe'); setHover(null); }}>Globe</button></div><span className="view-label">{viewMode === 'map' ? 'Drag · scroll to zoom · wraps endlessly' : 'Drag to rotate · scroll to zoom'}</span><button className="icon-button" aria-label="Reset map view" onClick={() => { setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); }}>⌂</button></div></div><div className={`map-frame map-frame--${viewMode}`}><MapCanvas atlas={atlas} cities={cities} counts={counts} selectedIndex={selectedIndex} hover={hover} view={view} viewMode={viewMode} globeLon={globeLon} showBorders={showBorders} showCities={showCities} onViewChange={setView} onGlobeRotate={setGlobeLon} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Weather: Open-Meteo / ERA5 · Cities: GeoNames country capitals · 5° source · 1° display tiles · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip map-tooltip--wide" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><div className="map-tooltip__top"><span>{hover.lat.toFixed(1)}°, {hover.lon.toFixed(1)}°</span><strong>{hoveredCount} perfect days</strong></div>{hoverSummary && <div className="map-tooltip__metrics"><span><small>High temp</small><b>{hoverSummary.temp.toFixed(1)}°C · {hoverSummary.tempDays}d</b></span><span><small>Dew point</small><b>{hoverSummary.dew.toFixed(1)}°C · {hoverSummary.dewDays}d</b></span><span><small>Wind speed</small><b>{hoverSummary.wind.toFixed(1)} m/s · {hoverSummary.windDays}d</b></span><span><small>Cloud cover</small><b>{hoverSummary.cloud.toFixed(0)}% · {hoverSummary.cloudDays}d</b></span></div>}<em>Average value · passing days in selected months</em></div>}</div><div className="map-footer"><div className="legend"><span>0</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{selectedDayCount}</span><em>perfect days</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
-        <aside className="insight-panel"><div className="insight-card insight-card--selected"><span className="eyebrow">Selected place</span><h3>{selectedLabel}</h3>{selectedCount !== null ? <><div className="big-number">{selectedCount}<small> / {selectedDayCount}</small></div><p>days match your definition of perfect.</p><div className="insight-meter"><span style={{ width: `${(selectedCount / Math.max(1, selectedDayCount)) * 100}%` }} /></div></> : <p className="empty-copy">Click anywhere on the map to inspect a grid cell or a nearby city.</p>}</div><div className="insight-card"><div className="card-heading"><span className="eyebrow">Most promising cells</span><span className="spark">↗</span></div>{bestCells.map((index) => { const row = Math.floor(index / atlas.width); const col = index % atlas.width; return <button className="rank-row" key={index} onClick={() => setSelectedIndex(index)}><span className="rank">0{bestCells.indexOf(index) + 1}</span><span><strong>{atlas.lats[row].toFixed(1)}°, {atlas.lons[col].toFixed(1)}°</strong><small>{counts[index]} perfect days</small></span><b>→</b></button>; })}</div><div className="insight-card insight-card--source"><span className="eyebrow">Dataset</span><div className="source-row"><span className="source-logo">ERA5</span><span><strong>Global daily reanalysis</strong><small>{dataStatus === 'live' ? 'Connected to the local downloaded atlas' : dataStatus === 'preview' ? 'Preview mode · importer included in the project' : 'Loading the downloaded atlas'}</small></span></div><a href="https://open-meteo.com/en/docs/historical-weather-api" target="_blank" rel="noreferrer">Read the data notes ↗</a></div></aside>
+        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">{metric === 'temperature' ? 'Average high · ' : 'Days per year · '}{atlas.year}</span><h2>{metric === 'temperature' ? 'Average high temperature' : 'Annual number of perfect weather days'}</h2><p>{metric === 'temperature' ? 'Average daily high temperature across the selected months.' : criteriaText}</p></div><div className="map-heading__actions"><div className="view-mode-toggle" role="group" aria-label="Map view"><button className={viewMode === 'map' ? 'is-active' : ''} onClick={() => { setViewMode('map'); setHover(null); }}>Map</button><button className={viewMode === 'globe' ? 'is-active' : ''} onClick={() => { setViewMode('globe'); setHover(null); }}>Globe</button></div><div className="view-mode-toggle heatmetric-toggle" role="group" aria-label="Heat map metric"><button className={metric === 'perfect' ? 'is-active' : ''} onClick={() => { setMetric('perfect'); setHover(null); }}>Perfect days</button><button className={metric === 'temperature' ? 'is-active' : ''} onClick={() => { setMetric('temperature'); setHover(null); }}>Avg temp</button></div><span className="view-label">{viewMode === 'map' ? 'Drag · scroll to zoom · wraps endlessly' : 'Drag to rotate · scroll to zoom'}</span><button className="icon-button" aria-label="Reset map view" onClick={() => { setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); }}>⌂</button></div></div><div className={`map-frame map-frame--${viewMode}`}><MapCanvas atlas={atlas} cities={cities} counts={counts} metric={metric} averageTemperatures={temperatureSummary.average} temperatureAvailable={temperatureSummary.available} temperatureMin={temperatureSummary.minimum} temperatureMax={temperatureSummary.maximum} selectedIndex={selectedIndex} hover={hover} view={view} viewMode={viewMode} globeLon={globeLon} showBorders={showBorders} showCities={showCities} onViewChange={setView} onGlobeRotate={setGlobeLon} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Weather: Open-Meteo / ERA5 · Cities: GeoNames country capitals · 5° source · 1° display tiles · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip map-tooltip--wide" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><div className="map-tooltip__top"><span>{hover.lat.toFixed(1)}°, {hover.lon.toFixed(1)}°</span><strong>{hoveredHeadline}</strong></div>{hoverSummary && <div className="map-tooltip__metrics"><span><small>High temp</small><b>{hoverSummary.temp.toFixed(1)}°C · {hoverSummary.tempDays}d</b></span><span><small>Dew point</small><b>{hoverSummary.dew.toFixed(1)}°C · {hoverSummary.dewDays}d</b></span><span><small>Wind speed</small><b>{hoverSummary.wind.toFixed(1)} m/s · {hoverSummary.windDays}d</b></span><span><small>Cloud cover</small><b>{hoverSummary.cloud.toFixed(0)}% · {hoverSummary.cloudDays}d</b></span></div>}<em>Average value · passing days in selected months</em></div>}</div><div className="map-footer"><div className="legend"><span>{legendMinimum}</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{legendMaximum}</span><em>{legendLabel}</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
+        <aside className="insight-panel"><div className="insight-card insight-card--selected"><span className="eyebrow">Selected place</span><h3>{selectedLabel}</h3>{selectedMetricValue !== null ? <><div className="big-number">{metric === 'temperature' ? Number(selectedMetricValue).toFixed(1) : selectedMetricValue}<small>{metric === 'temperature' ? ' °C' : ` / ${selectedDayCount}`}</small></div><p>{metric === 'temperature' ? 'average daily high in the selected months.' : 'days match your definition of perfect.'}</p><div className="insight-meter"><span style={{ width: `${selectedMeter}%` }} /></div></> : <p className="empty-copy">Click anywhere on the map to inspect a grid cell or a nearby city.</p>}</div><div className="insight-card"><div className="card-heading"><span className="eyebrow">{metric === 'temperature' ? 'Warmest cells' : 'Most promising cells'}</span><span className="spark">↗</span></div>{bestCells.map((index) => { const row = Math.floor(index / atlas.width); const col = index % atlas.width; return <button className="rank-row" key={index} onClick={() => setSelectedIndex(index)}><span className="rank">0{bestCells.indexOf(index) + 1}</span><span><strong>{atlas.lats[row].toFixed(1)}°, {atlas.lons[col].toFixed(1)}°</strong><small>{metric === 'temperature' ? `${temperatureSummary.average[index].toFixed(1)}°C average high` : `${counts[index]} perfect days`}</small></span><b>→</b></button>; })}</div><div className="insight-card insight-card--source"><span className="eyebrow">Dataset</span><div className="source-row"><span className="source-logo">ERA5</span><span><strong>Global daily reanalysis</strong><small>{dataStatus === 'live' ? 'Connected to the local downloaded atlas' : dataStatus === 'preview' ? 'Preview mode · importer included in the project' : 'Loading the downloaded atlas'}</small></span></div><a href="https://open-meteo.com/en/docs/historical-weather-api" target="_blank" rel="noreferrer">Read the data notes ↗</a></div></aside>
       </div>
     </main>
   );
