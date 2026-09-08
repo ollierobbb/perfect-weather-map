@@ -29,7 +29,7 @@ type AtlasData = {
   source: 'Open-Meteo · ERA5' | 'local fallback';
 };
 
-type City = { name: string; country: string; lat: number; lon: number };
+type City = { name: string; country: string; lat: number; lon: number; population: number };
 type HoverState = { index: number; displayCol: number; displayRow: number; lat: number; lon: number; x: number; y: number } | null;
 type ViewState = { scale: number; x: number; y: number };
 type HoverSummary = { temp: number; dew: number; wind: number; cloud: number; tempDays: number; dewDays: number; windDays: number; cloudDays: number };
@@ -51,26 +51,23 @@ const DEFAULT_CRITERIA: Criteria = {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const PALETTE = ['#318fa0', '#71bca2', '#b9da9a', '#f5f5aa', '#ffd778', '#f99a5d', '#e95b50', '#ad1e4d'];
 const DISPLAY_FACTOR = 5;
+const CITY_LABEL_MIN_POPULATION = 3_000_000;
 const OCEAN_COLOUR = '#d8e0dd';
 const EQUATOR_COLOUR = 'rgba(35, 78, 84, .42)';
-const CITIES: City[] = [
-  { name: 'Vancouver', country: 'Canada', lat: 49.28, lon: -123.12 },
-  { name: 'New York', country: 'United States', lat: 40.71, lon: -74.0 },
-  { name: 'Mexico City', country: 'Mexico', lat: 19.43, lon: -99.13 },
-  { name: 'Lima', country: 'Peru', lat: -12.05, lon: -77.04 },
-  { name: 'Rio de Janeiro', country: 'Brazil', lat: -22.91, lon: -43.17 },
-  { name: 'Lisbon', country: 'Portugal', lat: 38.72, lon: -9.14 },
-  { name: 'London', country: 'United Kingdom', lat: 51.51, lon: -0.13 },
-  { name: 'Cape Town', country: 'South Africa', lat: -33.92, lon: 18.42 },
-  { name: 'Nairobi', country: 'Kenya', lat: -1.29, lon: 36.82 },
-  { name: 'Cairo', country: 'Egypt', lat: 30.04, lon: 31.24 },
-  { name: 'Dubai', country: 'UAE', lat: 25.2, lon: 55.27 },
-  { name: 'Mumbai', country: 'India', lat: 19.08, lon: 72.88 },
-  { name: 'Singapore', country: 'Singapore', lat: 1.35, lon: 103.82 },
-  { name: 'Sydney', country: 'Australia', lat: -33.87, lon: 151.21 },
-  { name: 'Auckland', country: 'New Zealand', lat: -36.85, lon: 174.76 },
-  { name: 'Tokyo', country: 'Japan', lat: 35.68, lon: 139.65 },
-  { name: 'Honolulu', country: 'United States', lat: 21.31, lon: -157.86 },
+const FEATURED_CITIES: City[] = [
+  { name: 'New York', country: 'United States', lat: 40.71, lon: -74.0, population: 8804190 },
+  { name: 'Mexico City', country: 'Mexico', lat: 19.43, lon: -99.13, population: 9209944 },
+  { name: 'Lima', country: 'Peru', lat: -12.05, lon: -77.04, population: 9674755 },
+  { name: 'Rio de Janeiro', country: 'Brazil', lat: -22.91, lon: -43.17, population: 6211423 },
+  { name: 'London', country: 'United Kingdom', lat: 51.51, lon: -0.13, population: 8961989 },
+  { name: 'Nairobi', country: 'Kenya', lat: -1.29, lon: 36.82, population: 4397073 },
+  { name: 'Cairo', country: 'Egypt', lat: 30.04, lon: 31.24, population: 10230350 },
+  { name: 'Dubai', country: 'UAE', lat: 25.2, lon: 55.27, population: 3513700 },
+  { name: 'Mumbai', country: 'India', lat: 19.08, lon: 72.88, population: 12442373 },
+  { name: 'Singapore', country: 'Singapore', lat: 1.35, lon: 103.82, population: 5638700 },
+  { name: 'Sydney', country: 'Australia', lat: -33.87, lon: 151.21, population: 5312163 },
+  { name: 'Auckland', country: 'New Zealand', lat: -36.85, lon: 174.76, population: 1657200 },
+  { name: 'Tokyo', country: 'Japan', lat: 35.68, lon: 139.65, population: 14094000 },
 ];
 
 function clamp(value: number, min: number, max: number) {
@@ -232,7 +229,7 @@ function CriteriaRange({ label, min, max, lower, upper, step, unit, onLower, onU
   );
 }
 
-function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, onViewChange, onGlobeRotate, onHover, onSelect }: { atlas: AtlasData; counts: Uint16Array; selectedIndex: number | null; hover: HoverState; view: ViewState; viewMode: ViewMode; globeLon: number; showBorders: boolean; showCities: boolean; onViewChange: (next: ViewState) => void; onGlobeRotate: (next: number) => void; onHover: (next: HoverState) => void; onSelect: (index: number) => void }) {
+function MapCanvas({ atlas, cities, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, onViewChange, onGlobeRotate, onHover, onSelect }: { atlas: AtlasData; cities: City[]; counts: Uint16Array; selectedIndex: number | null; hover: HoverState; view: ViewState; viewMode: ViewMode; globeLon: number; showBorders: boolean; showCities: boolean; onViewChange: (next: ViewState) => void; onGlobeRotate: (next: number) => void; onHover: (next: HoverState) => void; onSelect: (index: number) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mapSizeRef = useRef({ width: 0, height: 0 });
   const countriesRef = useRef<CountryFeature[]>([]);
@@ -278,12 +275,12 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
     const sourceCellWidth = width / atlas.width;
     const sourceCellHeight = height / atlas.height;
     const sourceCellForDisplay = (row: number, col: number) => Math.floor(row / DISPLAY_FACTOR) * atlas.width + Math.floor(col / DISPLAY_FACTOR);
-    const tileIsLand = (row: number, col: number) => landMask === null || landMask[row * refinedGrid.width + col] === 1;
+    const tileIsLand = (row: number, col: number) => landMask === null || landMask[(refinedGrid.height - row - 1) * refinedGrid.width + col] === 1;
     const tileHasData = (row: number, col: number) => validData[sourceCellForDisplay(row, col)] === 1;
 
     const drawMapCopy = () => {
       for (let row = 0; row < refinedGrid.height; row += 1) {
-        const latitude = -90 + (row + 0.5) / DISPLAY_FACTOR;
+        const latitude = -90 + ((row + 0.5) * 180) / refinedGrid.height;
         for (let col = 0; col < refinedGrid.width; col += 1) {
           const index = row * refinedGrid.width + col;
           const hasData = tileHasData(row, col);
@@ -325,13 +322,15 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
         context.setLineDash([]);
         context.font = `${Math.max(9, 10 / view.scale)}px ui-sans-serif, system-ui, sans-serif`;
         context.textBaseline = 'middle';
-        for (const city of CITIES) {
+        for (const city of cities) {
           const x = ((city.lon + 180) / 360) * width;
           const y = ((90 - city.lat) / 180) * height;
           context.fillStyle = '#112d3c';
           context.beginPath(); context.arc(x, y, 2.3 / view.scale, 0, Math.PI * 2); context.fill();
-          context.fillStyle = 'rgba(17, 45, 60, .84)';
-          context.fillText(city.name, x + 5 / view.scale, y);
+          if (city.population >= CITY_LABEL_MIN_POPULATION) {
+            context.fillStyle = 'rgba(17, 45, 60, .84)';
+            context.fillText(city.name, x + 5 / view.scale, y);
+          }
         }
       }
       if (hover) {
@@ -357,7 +356,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
       return;
     }
 
-    const radius = Math.min(width, height) * 0.43;
+    const radius = Math.min(width, height) * 0.43 * view.scale;
     const centerX = width / 2;
     const centerY = height / 2;
     const projectGlobe = (longitude: number, latitude: number) => {
@@ -372,9 +371,9 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
     context.beginPath(); context.arc(centerX, centerY, radius, 0, Math.PI * 2); context.clip();
     const globeTileSize = Math.max(1, radius * Math.PI / 180 * 1.15);
     for (let row = 0; row < refinedGrid.height; row += 1) {
-      const latitude = -90 + (row + 0.5) / DISPLAY_FACTOR;
+      const latitude = -90 + ((row + 0.5) * 180) / refinedGrid.height;
       for (let col = 0; col < refinedGrid.width; col += 1) {
-        const longitude = -180 + (col + 0.5) / DISPLAY_FACTOR;
+        const longitude = -180 + ((col + 0.5) * 360) / refinedGrid.width;
         const point = projectGlobe(longitude, latitude);
         if (!point.visible) continue;
         const index = row * refinedGrid.width + col;
@@ -393,13 +392,15 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
       context.setLineDash([]);
       context.font = '10px ui-sans-serif, system-ui, sans-serif';
       context.textBaseline = 'middle';
-      for (const city of CITIES) {
+      for (const city of cities) {
         const point = projectGlobe(city.lon, city.lat);
         if (!point.visible) continue;
         context.fillStyle = '#112d3c';
         context.beginPath(); context.arc(point.x, point.y, 2.3, 0, Math.PI * 2); context.fill();
-        context.fillStyle = 'rgba(17, 45, 60, .84)';
-        context.fillText(city.name, point.x + 5, point.y);
+        if (city.population >= CITY_LABEL_MIN_POPULATION) {
+          context.fillStyle = 'rgba(17, 45, 60, .84)';
+          context.fillText(city.name, point.x + 5, point.y);
+        }
       }
     }
     if (hover) {
@@ -423,7 +424,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { draw(); }, [atlas, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, landMask, validData]);
+  useEffect(() => { draw(); }, [atlas, cities, counts, selectedIndex, hover, view, viewMode, globeLon, showBorders, showCities, landMask, validData]);
 
   function cellFromPoint(clientX: number, clientY: number) {
     const canvas = canvasRef.current;
@@ -455,8 +456,8 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
       const displayRowFromTop = Math.floor((y / height) * refinedGrid.height);
       if (displayRowFromTop < 0 || displayRowFromTop >= refinedGrid.height) return null;
       displayRow = refinedGrid.height - displayRowFromTop - 1;
-      lat = -90 + (displayRow + 0.5) / displayFactor;
-      lon = -180 + (displayCol + 0.5) / displayFactor;
+      lat = -90 + ((displayRow + 0.5) * 180) / refinedGrid.height;
+      lon = -180 + ((displayCol + 0.5) * 360) / refinedGrid.width;
     }
     const col = Math.min(atlas.width - 1, Math.floor(displayCol / displayFactor));
     const row = Math.min(atlas.height - 1, Math.floor(displayRow / displayFactor));
@@ -468,6 +469,7 @@ function MapCanvas({ atlas, counts, selectedIndex, hover, view, viewMode, globeL
 
 export default function Home() {
   const [atlas, setAtlas] = useState<AtlasData>(() => createFallbackAtlas());
+  const [cities, setCities] = useState<City[]>(FEATURED_CITIES);
   const [dataStatus, setDataStatus] = useState<'loading' | 'live' | 'preview'>('loading');
   const [criteria, setCriteria] = useState<Criteria>(DEFAULT_CRITERIA);
   const [view, setView] = useState<ViewState>({ scale: 1, x: 0, y: 0 });
@@ -480,6 +482,7 @@ export default function Home() {
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
 
   useEffect(() => { loadAtlas().then((loaded) => { setAtlas(loaded); setDataStatus('live'); }).catch(() => setDataStatus('preview')); }, []);
+  useEffect(() => { fetch('/cities-1m.json').then((response) => response.json()).then((loaded: City[]) => { if (Array.isArray(loaded) && loaded.length) setCities(loaded); }).catch(() => undefined); }, []);
 
   const monthMap = useMemo(() => createMonthMap(atlas.year), [atlas.year]);
   const selectedDayCount = useMemo(() => monthMap.filter((month) => month >= criteria.monthStart && month <= criteria.monthEnd).length, [criteria.monthStart, criteria.monthEnd, monthMap]);
@@ -505,7 +508,7 @@ export default function Home() {
 
   const selected = selectedIndex === null ? null : { index: selectedIndex, row: Math.floor(selectedIndex / atlas.width), col: selectedIndex % atlas.width };
   const hovered = hover ? { index: hover.index } : null;
-  const selectedCity = selected ? CITIES.find((city) => Math.abs(city.lat - atlas.lats[selected.row]) < 3 && Math.abs(city.lon - atlas.lons[selected.col]) < 3) : null;
+  const selectedCity = selected ? cities.find((city) => Math.abs(city.lat - atlas.lats[selected.row]) < 3 && Math.abs(city.lon - atlas.lons[selected.col]) < 3) : null;
   const selectedLabel = selectedCity?.name ?? (selected ? `${atlas.lats[selected.row].toFixed(1)}°, ${atlas.lons[selected.col].toFixed(1)}°` : 'Select a place');
   const hoveredCount = hovered ? counts[hovered.index] : null;
   const selectedCount = selected ? counts[selected.index] : null;
@@ -562,10 +565,10 @@ export default function Home() {
           <p className="panel-intro">Tune the day you would choose. Every cell recalculates across the selected part of the year.</p>
           <div className="criteria-section"><div className="section-label"><span>Climate criteria</span><span className="section-number">01</span></div><CriteriaRange label="High temperature" min={0} max={40} lower={criteria.tempMin} upper={criteria.tempMax} step={1} unit="°C" onLower={(value) => updateCriteria('tempMin', value)} onUpper={(value) => updateCriteria('tempMax', value)} /><CriteriaRange label="Dew point" min={-4} max={26} lower={criteria.dewMin} upper={criteria.dewMax} step={1} unit="°C" onLower={(value) => updateCriteria('dewMin', value)} onUpper={(value) => updateCriteria('dewMax', value)} /><div className="single-criterion"><div className="criteria-range__heading"><span>Wind speed maximum</span><strong>{criteria.windMax.toFixed(1)} m/s</strong></div><input aria-label="Wind speed maximum" className="single-slider" type="range" min="1" max="12" step="0.5" value={criteria.windMax} onChange={(event) => updateCriteria('windMax', Number(event.target.value))} /><div className="criteria-range__limits"><span>still</span><span>12 m/s</span></div></div><div className="single-criterion"><div className="criteria-range__heading"><span>Cloud cover maximum</span><strong>{criteria.cloudMax}%</strong></div><input aria-label="Cloud cover maximum" className="single-slider" type="range" min="10" max="100" step="5" value={criteria.cloudMax} onChange={(event) => updateCriteria('cloudMax', Number(event.target.value))} /><div className="criteria-range__limits"><span>clear</span><span>overcast</span></div></div></div>
           <div className="criteria-section season-section"><div className="section-label"><span>Time of year</span><span className="section-number">02</span></div><div className="criteria-range__heading"><span>Include months</span><strong>{MONTHS[criteria.monthStart - 1]}–{MONTHS[criteria.monthEnd - 1]}</strong></div><div className="criteria-range__track month-range__track"><span className="criteria-range__fill" style={{ left: `${monthLeft}%`, right: `${100 - monthRight}%` }} /><input aria-label="First month" type="range" min="1" max="12" step="1" value={criteria.monthStart} onChange={(event) => updateCriteria('monthStart', Math.min(Number(event.target.value), criteria.monthEnd))} /><input aria-label="Last month" type="range" min="1" max="12" step="1" value={criteria.monthEnd} onChange={(event) => updateCriteria('monthEnd', Math.max(Number(event.target.value), criteria.monthStart))} /></div><div className="criteria-range__limits"><span>Jan</span><span>Dec</span></div><div className="month-pills">{MONTHS.map((month, index) => <button key={month} className={index + 1 >= criteria.monthStart && index + 1 <= criteria.monthEnd ? 'is-selected' : ''} onClick={() => { const monthValue = index + 1; setCriteria((current) => monthValue < current.monthStart ? { ...current, monthStart: monthValue } : monthValue > current.monthEnd ? { ...current, monthEnd: monthValue } : { ...current, monthStart: monthValue, monthEnd: monthValue }); }}>{month}</button>)}</div><div className="criteria-range__limits"><span>{selectedDayCount} days in view</span><span>{atlas.year} baseline</span></div></div>
-          <div className="criteria-section layers-section"><div className="section-label"><span>Map layers</span><span className="section-number">03</span></div><label className="toggle-row"><span><i className="layer-dot layer-dot--cities" /> Key cities</span><input type="checkbox" checked={showCities} onChange={(event) => setShowCities(event.target.checked)} /><b /></label><label className="toggle-row"><span><i className="layer-dot layer-dot--borders" /> Country outlines</span><input type="checkbox" checked={showBorders} onChange={(event) => setShowBorders(event.target.checked)} /><b /></label></div>
+          <div className="criteria-section layers-section"><div className="section-label"><span>Map layers</span><span className="section-number">03</span></div><label className="toggle-row"><span><i className="layer-dot layer-dot--cities" /> Cities &gt;1M <small className="layer-count">{cities.length}</small></span><input type="checkbox" checked={showCities} onChange={(event) => setShowCities(event.target.checked)} /><b /></label><label className="toggle-row"><span><i className="layer-dot layer-dot--borders" /> Country outlines</span><input type="checkbox" checked={showBorders} onChange={(event) => setShowBorders(event.target.checked)} /><b /></label></div>
           <div className="data-note"><span className="data-note__icon">↗</span><p><strong>How this is calculated</strong><br />Daily ERA5 reanalysis from Open-Meteo, sampled on a 5° global grid. Dew point is derived from temperature and relative humidity.</p></div>
         </aside>
-        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">Days per year · {atlas.year}</span><h2>Annual number of perfect weather days</h2><p>{criteriaText}</p></div><div className="map-heading__actions"><div className="view-mode-toggle" role="group" aria-label="Map view"><button className={viewMode === 'map' ? 'is-active' : ''} onClick={() => { setViewMode('map'); setHover(null); }}>Map</button><button className={viewMode === 'globe' ? 'is-active' : ''} onClick={() => { setViewMode('globe'); setHover(null); }}>Globe</button></div><span className="view-label">{viewMode === 'map' ? 'Drag · scroll to zoom · wraps endlessly' : 'Drag to rotate · scroll to zoom'}</span><button className="icon-button" aria-label="Reset map view" onClick={() => { setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); }}>⌂</button></div></div><div className={`map-frame map-frame--${viewMode}`}><MapCanvas atlas={atlas} counts={counts} selectedIndex={selectedIndex} hover={hover} view={view} viewMode={viewMode} globeLon={globeLon} showBorders={showBorders} showCities={showCities} onViewChange={setView} onGlobeRotate={setGlobeLon} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Source: Open-Meteo / ERA5 · 5° source · 1° display tiles · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip map-tooltip--wide" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><div className="map-tooltip__top"><span>{hover.lat.toFixed(1)}°, {hover.lon.toFixed(1)}°</span><strong>{hoveredCount} perfect days</strong></div>{hoverSummary && <div className="map-tooltip__metrics"><span><small>High temp</small><b>{hoverSummary.temp.toFixed(1)}°C · {hoverSummary.tempDays}d</b></span><span><small>Dew point</small><b>{hoverSummary.dew.toFixed(1)}°C · {hoverSummary.dewDays}d</b></span><span><small>Wind speed</small><b>{hoverSummary.wind.toFixed(1)} m/s · {hoverSummary.windDays}d</b></span><span><small>Cloud cover</small><b>{hoverSummary.cloud.toFixed(0)}% · {hoverSummary.cloudDays}d</b></span></div>}<em>Average value · passing days in selected months</em></div>}</div><div className="map-footer"><div className="legend"><span>0</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{selectedDayCount}</span><em>perfect days</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
+        <section className="map-panel"><div className="map-heading"><div><span className="eyebrow">Days per year · {atlas.year}</span><h2>Annual number of perfect weather days</h2><p>{criteriaText}</p></div><div className="map-heading__actions"><div className="view-mode-toggle" role="group" aria-label="Map view"><button className={viewMode === 'map' ? 'is-active' : ''} onClick={() => { setViewMode('map'); setHover(null); }}>Map</button><button className={viewMode === 'globe' ? 'is-active' : ''} onClick={() => { setViewMode('globe'); setHover(null); }}>Globe</button></div><span className="view-label">{viewMode === 'map' ? 'Drag · scroll to zoom · wraps endlessly' : 'Drag to rotate · scroll to zoom'}</span><button className="icon-button" aria-label="Reset map view" onClick={() => { setView({ scale: 1, x: 0, y: 0 }); setGlobeLon(0); }}>⌂</button></div></div><div className={`map-frame map-frame--${viewMode}`}><MapCanvas atlas={atlas} cities={cities} counts={counts} selectedIndex={selectedIndex} hover={hover} view={view} viewMode={viewMode} globeLon={globeLon} showBorders={showBorders} showCities={showCities} onViewChange={setView} onGlobeRotate={setGlobeLon} onHover={setHover} onSelect={setSelectedIndex} /><div className="map-attribution">Weather: Open-Meteo / ERA5 · Cities: GeoNames cities500 · 5° source · 1° display tiles · {atlas.year}</div><div className="map-zoom"><button aria-label="Zoom in" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 1.25, 0.82, 4.8) }))}>+</button><button aria-label="Zoom out" onClick={() => setView((current) => ({ ...current, scale: clamp(current.scale * 0.8, 0.82, 4.8) }))}>−</button></div>{hover && hovered && <div className="map-tooltip map-tooltip--wide" style={{ left: clamp(hover.x + 14, 12, 9999), top: clamp(hover.y + 14, 12, 9999) }}><div className="map-tooltip__top"><span>{hover.lat.toFixed(1)}°, {hover.lon.toFixed(1)}°</span><strong>{hoveredCount} perfect days</strong></div>{hoverSummary && <div className="map-tooltip__metrics"><span><small>High temp</small><b>{hoverSummary.temp.toFixed(1)}°C · {hoverSummary.tempDays}d</b></span><span><small>Dew point</small><b>{hoverSummary.dew.toFixed(1)}°C · {hoverSummary.dewDays}d</b></span><span><small>Wind speed</small><b>{hoverSummary.wind.toFixed(1)} m/s · {hoverSummary.windDays}d</b></span><span><small>Cloud cover</small><b>{hoverSummary.cloud.toFixed(0)}% · {hoverSummary.cloudDays}d</b></span></div>}<em>Average value · passing days in selected months</em></div>}</div><div className="map-footer"><div className="legend"><span>0</span><div className="legend-ramp">{PALETTE.map((colour) => <i key={colour} style={{ background: colour }} />)}</div><span>{selectedDayCount}</span><em>perfect days</em></div><div className="map-footer__hint"><span className="drag-icon">✣</span> Heat map updates as you tune the criteria</div></div></section>
         <aside className="insight-panel"><div className="insight-card insight-card--selected"><span className="eyebrow">Selected place</span><h3>{selectedLabel}</h3>{selectedCount !== null ? <><div className="big-number">{selectedCount}<small> / {selectedDayCount}</small></div><p>days match your definition of perfect.</p><div className="insight-meter"><span style={{ width: `${(selectedCount / Math.max(1, selectedDayCount)) * 100}%` }} /></div></> : <p className="empty-copy">Click anywhere on the map to inspect a grid cell or a nearby city.</p>}</div><div className="insight-card"><div className="card-heading"><span className="eyebrow">Most promising cells</span><span className="spark">↗</span></div>{bestCells.map((index) => { const row = Math.floor(index / atlas.width); const col = index % atlas.width; return <button className="rank-row" key={index} onClick={() => setSelectedIndex(index)}><span className="rank">0{bestCells.indexOf(index) + 1}</span><span><strong>{atlas.lats[row].toFixed(1)}°, {atlas.lons[col].toFixed(1)}°</strong><small>{counts[index]} perfect days</small></span><b>→</b></button>; })}</div><div className="insight-card insight-card--source"><span className="eyebrow">Dataset</span><div className="source-row"><span className="source-logo">ERA5</span><span><strong>Global daily reanalysis</strong><small>{dataStatus === 'live' ? 'Connected to the local downloaded atlas' : dataStatus === 'preview' ? 'Preview mode · importer included in the project' : 'Loading the downloaded atlas'}</small></span></div><a href="https://open-meteo.com/en/docs/historical-weather-api" target="_blank" rel="noreferrer">Read the data notes ↗</a></div></aside>
       </div>
     </main>

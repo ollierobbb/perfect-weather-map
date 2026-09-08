@@ -68,6 +68,7 @@ button { cursor: pointer; }
 .month-pills + .criteria-range__limits { margin-top: 9px; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; min-height: 29px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .toggle-row > span { display: inline-flex; align-items: center; gap: 8px; }
+.layer-count { color: #8ca3a4; font-size: 9px; font-weight: 700; }
 .toggle-row input { position: absolute; opacity: 0; }
 .toggle-row b { width: 28px; height: 16px; display: block; position: relative; border-radius: 99px; background: #dbe7e4; transition: background .18s ease; }
 .toggle-row b::after { content: ''; width: 12px; height: 12px; position: absolute; top: 2px; left: 2px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #809c9a66; transition: transform .18s ease; }
